@@ -1,4 +1,4 @@
-A library for Dart developers.
+A library for Dart and Flutter developers.
 
 Created from templates made available by Stagehand under a BSD-style
 [license](https://github.com/bitsydarel/executorservices/blob/master/LICENSE).
