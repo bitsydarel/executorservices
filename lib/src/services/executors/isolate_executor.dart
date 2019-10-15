@@ -2,7 +2,7 @@ import "dart:async";
 import "dart:isolate";
 
 import "package:executorservices/executorservices.dart";
-import 'package:executorservices/src/tasks/tasks.dart';
+import "package:executorservices/src/tasks/tasks.dart";
 
 /// [Executor] that execute [Task] into a isolate.
 class IsolateExecutor extends Executor {
@@ -21,7 +21,7 @@ class IsolateExecutor extends Executor {
   /// The port to send command to the [_isolate].
   SendPort _isolateCommandPort;
 
-  /// The port that will receive the [_isolate].
+  /// The port that will receive the [_isolate]'s responses.
   ReceivePort _isolateOutputPort;
 
   /// The subscription to the [_isolateOutputPort] event stream.
@@ -29,17 +29,33 @@ class IsolateExecutor extends Executor {
 
   var _processingTask = false;
 
+  DateTime _lastUsage;
+
   @override
   void execute<R>(Task task) async {
+    _processingTask = true;
+
     if (_isolate == null) {
       await _initialize();
     }
-    _processingTask = true;
+
     _isolateCommandPort.send(task);
+
+    _lastUsage = DateTime.now();
   }
 
   @override
-  FutureOr<bool> isBusy() => _isolate != null && _processingTask;
+  FutureOr<bool> isBusy() => _processingTask;
+
+  @override
+  Future<void> kill() async {
+    await _outputSubscription?.cancel();
+    _isolate?.kill(priority: Isolate.immediate);
+    _isolateOutputPort?.close();
+  }
+
+  @override
+  DateTime lastUsage() => _lastUsage;
 
   Future<void> _initialize() async {
     _isolateOutputPort = ReceivePort();
@@ -51,27 +67,26 @@ class IsolateExecutor extends Executor {
       errorsAreFatal: false,
     );
 
+    // We create a multi-subscription output port.
+    // This will allow us to get the first event and still listen
+    // for subsequent events.
     final outputEvent = _isolateOutputPort.asBroadcastStream();
 
     // We wait for the first output before listening to the other output event
     // The first output is the isolate command port.
     _isolateCommandPort = await outputEvent.first;
 
+    // Un-definitely process the event in of the outputEvent.
+    // Until the subscription is cancelled or the stream is closed.
     _outputSubscription = outputEvent.listen(
       (event) {
         if (event is TaskOutput) {
           _processingTask = false;
           onTaskCompleted(event, this);
+          _lastUsage = DateTime.now();
         }
       },
     );
-  }
-
-  @override
-  Future<void> kill() async {
-    await _outputSubscription?.cancel();
-    _isolate?.kill(priority: Isolate.immediate);
-    _isolateOutputPort?.close();
   }
 
   static void _isolateSetup(final SendPort executorOutputPort) async {

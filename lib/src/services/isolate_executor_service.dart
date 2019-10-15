@@ -1,19 +1,33 @@
-import "package:executorservices/src/executors/isolate_executor.dart";
 import "package:executorservices/executorservices.dart";
+import "executors/isolate_executor_web.dart"
+    if (dart.library.io) "executors/isolate_executor.dart";
 
-/// A [IsolateExecutorService] that run [Task] into a [IsolateExecutor].
+/// A [IsolateExecutorService] that run [Task]
+/// into a [executors.IsolateExecutor].
 class IsolateExecutorService extends ExecutorService {
-  /// Create a [IsolateExecutorService].
-  IsolateExecutorService(String identifier, int maxConcurrency)
-      : super(identifier, maxConcurrency);
+  /// Create a [IsolateExecutorService] with the following [identifier].
+  ///
+  /// [maxConcurrency] is the max of isolate to use for executing [Task].
+  ///
+  /// [allowCleanup] if true we will kill unused isolate
+  /// if the [maxConcurrency] is greater than 5.
+  IsolateExecutorService(
+    String identifier,
+    int maxConcurrency, {
+    bool allowCleanup = false,
+  }) : super(
+          identifier,
+          maxConcurrency,
+          releaseUnusedExecutors: allowCleanup,
+        );
 
   int _isolateCounter = 1;
 
   @override
-  Future<Executor> createExecutor(final OnTaskCompleted onTaskCompleted) {
-    return Future.value(IsolateExecutor(
+  Executor createExecutor(final OnTaskCompleted onTaskCompleted) {
+    return IsolateExecutor(
       "${identifier}_executor${_isolateCounter++}",
       onTaskCompleted,
-    ));
+    );
   }
 }

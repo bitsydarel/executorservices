@@ -7,50 +7,21 @@ import "dart:async";
 
 import "dart:collection";
 
-import "dart:isolate";
-
-import "package:executorservices/src/services/Isolate_executor_service.dart";
+import "package:executorservices/src/exceptions.dart";
+import "package:executorservices/src/services/isolate_executor_service.dart";
 import "package:executorservices/src/tasks/tasks.dart";
 import "package:meta/meta.dart" show visibleForTesting, protected;
 
-export "package:executorservices/src/services/isolate_executor_service.dart";
+import "src/utils/utils_stub.dart"
+    if (dart.library.html) "src/utils/utils_web.dart"
+    if (dart.library.io) "src/utils/utils.dart";
+
+export "src/exceptions.dart";
+
+/// Maximum allowed executors to be kept.
+const int maxNonBusyExecutors = 5;
 
 typedef OnTaskCompleted = void Function(TaskOutput output, Executor executor);
-
-/// A [Exception] that's thrown when a [ExecutorService]
-/// is shutting down but client keep submitting work to it.
-class TaskRejectedException implements Exception {
-  /// Create a [TaskRejectedException] with the following [service].
-  const TaskRejectedException(this.service);
-
-  /// [ExecutorService] that trowed the [TaskRejectedException].
-  final ExecutorService service;
-
-  @override
-  String toString() => "Task can't be submitted because "
-      "[${service.runtimeType}:${service.identifier}]"
-      " is shutting down";
-}
-
-/// A [Exception] that's thrown when a [Task] failed with a exception.
-///
-/// Why having a custom [Exception] ?
-///
-/// Because [SendPort] send method does not accept object that are not from
-/// the same code and in the same process unless they are primitive.
-class TaskFailedException implements Exception {
-  /// [TaskFailedException] for the following [errorType] and [errorMessage].
-  const TaskFailedException(this.errorType, this.errorMessage);
-
-  /// The type of the error that was thrown.
-  final Type errorType;
-
-  /// Message describing the error.
-  final String errorMessage;
-
-  @override
-  String toString() => "Task failed with $errorType because $errorMessage";
-}
 
 /// Class that execute [Task].
 abstract class Executor {
@@ -67,7 +38,10 @@ abstract class Executor {
   void execute<R>(final Task<R> task);
 
   /// Kill the [Executor], this is the best place to free all resources.
-  Future<void> kill();
+  FutureOr<void> kill();
+
+  /// Get the last time this executor was used.
+  DateTime lastUsage();
 }
 
 /// A service that may execute [Task] on many [Executor].
@@ -79,18 +53,53 @@ abstract class ExecutorService {
   /// [maxConcurrency] for how many concurrent task can't be run at a time.
   ExecutorService(
     this.identifier,
-    this.maxConcurrency, [
+    this.maxConcurrency, {
+    this.releaseUnusedExecutors = false,
     final List<Executor> availableExecutors,
-  ])  : assert(identifier != null, "identifier can't be null"),
+  })  : assert(identifier != null, "identifier can't be null"),
         assert(maxConcurrency > 0, "maxConcurrency should be at least 1"),
-        executors = availableExecutors ?? [];
+        _executors = availableExecutors ?? [];
 
-  /// Create a IO [ExecutorService], that's backed by [Isolate].
-  factory ExecutorService.newIOExecutorService([
+  /// Create a cached [ExecutorService], that's backed by many [Executor].
+  ///
+  /// Note: It's unbound but restrict to the value of 2 ^ 63 so that you won't
+  /// shoot yourself in the foot, if you want to go pass this
+  /// use [ExecutorService.newFixedExecutor].
+  ///
+  /// Note: use isolate if the platform support them.
+  factory ExecutorService.newUnboundExecutor([
     final String identifier = "io_isolate_service",
-    final int maxConcurrency = 2 ^ 63,
   ]) {
-    return IsolateExecutorService(identifier, maxConcurrency);
+    return IsolateExecutorService(identifier, 2 ^ 63, allowCleanup: true);
+  }
+
+  /// Create a IO [ExecutorService], that's backed by a number [Executor]
+  /// matching the number of cpu available.
+  ///
+  /// Note: use isolate if the platform support them.
+  factory ExecutorService.newComputationExecutor([
+    final String identifier = "computation_isolate_service",
+  ]) {
+    return IsolateExecutorService(identifier, getCpuCount());
+  }
+
+  /// Create a [ExecutorService] backed by a single [Executor].
+  ///
+  /// Note: use isolate if the platform support them.
+  factory ExecutorService.newSingleExecutor([
+    final String identifier = "single_isolate_service",
+  ]) {
+    return IsolateExecutorService(identifier, 1);
+  }
+
+  /// Create a [ExecutorService] backed by fixed number [Executor].
+  ///
+  /// Note: use isolate if the platform support them.
+  factory ExecutorService.newFixedExecutor(
+    final int executorCount, [
+    final String identifier = "single_isolate_service",
+  ]) {
+    return IsolateExecutorService(identifier, executorCount);
   }
 
   /// The identifier of the [ExecutorService].
@@ -99,15 +108,22 @@ abstract class ExecutorService {
   /// The maximum number of [Task] allowed to be run at a time.
   final int maxConcurrency;
 
+  /// Release the unused [Executor].
+  final bool releaseUnusedExecutors;
+
   /// The list of [Executor] that can run a [Task].
   @protected
-  final List<Executor> executors;
+  final List<Executor> _executors;
 
   /// The pending [Task] that need to be executed.
   final Queue<Task> _pendingTasks = Queue();
 
   /// A repertoire of currently running [Task] that are waiting to be completed.
-  final Map<Capability, Completer> _inProgressTasks = {};
+  final Map<Object, Completer> _inProgressTasks = {};
+
+  /// A [StreamController] that handle all the new task submitted to the
+  /// [ExecutorService].
+  final StreamController<Task> _taskManager = StreamController();
 
   bool _shuttingDown = false;
 
@@ -183,13 +199,7 @@ abstract class ExecutorService {
     final P4 argument4,
   ) {
     return submit(
-      Function4Task(
-        argument1,
-        argument2,
-        argument3,
-        argument4,
-        function,
-      ),
+      Function4Task(argument1, argument2, argument3, argument4, function),
     );
   }
 
@@ -198,7 +208,7 @@ abstract class ExecutorService {
   /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
   /// Throws [TaskFailedException] if for some reason the [task] failed
   /// with a exception.
-  Future<R> submit<R>(final Task<R> task) async {
+  Future<R> submit<R>(final Task<R> task) {
     if (_shuttingDown) {
       return Future.error(TaskRejectedException(this));
     } else {
@@ -206,55 +216,50 @@ abstract class ExecutorService {
 
       _inProgressTasks[task.identifier] = taskResult;
 
-      final executor = await findAvailableExecutor();
-
-      if (executor != null) {
-        executor.execute(task);
-      } else if (executors.length < maxConcurrency) {
-        final newExecutor = await createExecutor(onTaskCompleted);
-
-        executors.add(newExecutor);
-
-        newExecutor.execute(task);
-      } else {
-        _pendingTasks.addLast(task);
+      if (!_taskManager.hasListener) {
+        _taskManager.stream.asyncMap(createNewTaskEvent).map(
+          (event) {
+            if (event.executor == null && _executors.length < maxConcurrency) {
+              final newExecutor = createExecutor(onTaskCompleted);
+              _executors.add(newExecutor);
+              event.executor = newExecutor;
+              return event;
+            } else {
+              return event;
+            }
+          },
+        ).listen(_handleTask);
       }
+
+      _taskManager.add(task);
 
       return taskResult.future;
     }
   }
 
-  /// Get the current pending tasks.
-  List<Task> getPendingTasks() => UnmodifiableListView(_pendingTasks);
-
-  /// Allow to verify if the [ExecutorService]
-  /// can accept any [Task] or [Function].
-  FutureOr<bool> canSubmitTask() => !_shuttingDown;
-
   /// Shutdown the [ExecutorService].
   Future<void> shutdown() async {
     _shuttingDown = true;
 
-    for (final executor in executors) {
+    for (final executor in _executors) {
       await executor.kill();
     }
+
+    await _taskManager.close();
   }
 
   /// Create a new [Executor] to execute [Task].
-  Future<Executor> createExecutor(final OnTaskCompleted onTaskCompleted);
+  Executor createExecutor(final OnTaskCompleted onTaskCompleted);
 
-  /// Find the next available executor to execute a [Task].
-  @visibleForTesting
-  Future<Executor> findAvailableExecutor() async {
-    for (final executor in executors) {
-      final isBusy = await executor.isBusy();
+  /// Get the current pending [Task].
+  List<Task> getPendingTasks() => UnmodifiableListView(_pendingTasks);
 
-      if (!isBusy) {
-        return executor;
-      }
-    }
-    return null;
-  }
+  /// Get the current list of [Executor].
+  List<Executor> getExecutors() => UnmodifiableListView(_executors);
+
+  /// Allow to verify if the [ExecutorService]
+  /// can accept any [Task] or [Function].
+  FutureOr<bool> canSubmitTask() => !_shuttingDown;
 
   /// Callback that's called when a [Executor]'s done processing a [Task].
   @visibleForTesting
@@ -277,15 +282,51 @@ abstract class ExecutorService {
       executor.execute(_pendingTasks.removeFirst());
     }
   }
+
+  void _handleTask(final SubmittedTaskEvent event) {
+    if (event.executor == null) {
+      _pendingTasks.addLast(event.task);
+    } else {
+      event.executor.execute(event.task);
+    }
+  }
+
+  /// Create a [SubmittedTaskEvent] for [task] with
+  /// the next available [Executor] to execute the [task].
+  @visibleForTesting
+  Future<SubmittedTaskEvent> createNewTaskEvent(final Task task) async {
+    final available = <Executor>[];
+
+    for (final executor in _executors) {
+      final isBusy = await executor.isBusy();
+
+      if (!isBusy) {
+        available.add(executor);
+      }
+    }
+
+    available.sort(
+      (left, right) => right.lastUsage().compareTo(left.lastUsage()),
+    );
+
+    if (releaseUnusedExecutors && available.length > maxNonBusyExecutors) {
+      _executors.remove(available.last);
+    }
+
+    return SubmittedTaskEvent(
+      task,
+      available.isNotEmpty ? available.first : null,
+    );
+  }
 }
 
 /// A class representing a unit of execution.
 abstract class Task<R> {
   /// Create a new task.
-  Task() : identifier = Capability();
+  Task() : identifier = createTaskIdentifier();
 
   /// [Task] identifier that can allow us to identify a task through isolates.
-  final Capability identifier;
+  final Object identifier;
 
   /// Run the task.
   Future<R> execute();
