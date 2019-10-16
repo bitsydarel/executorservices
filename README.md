@@ -1,7 +1,17 @@
 A library for Dart and Flutter developers.
 
-Created from templates made available by Stagehand under a BSD-style
 [license](https://github.com/bitsydarel/executorservices/blob/master/LICENSE).
+
+## Description
+It allows you to execute code in isolates or any executor currently supported.
+
+Support concurrent execution of tasks or functions.
+
+Support cleanup of unused isolates.
+
+Support caching of isolate that allow you to reuse them (like thread).
+
+It's extendable.
 
 ## Usage
 
