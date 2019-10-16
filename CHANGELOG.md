@@ -9,3 +9,7 @@
 ## 1.0.2
 
 - Added support for functions that does not return a future.
+
+## 1.0.3
+
+- Added support for functions that does not return a future on WEB also.

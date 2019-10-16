@@ -24,8 +24,15 @@ class IsolateExecutor extends Executor {
 
     Future.microtask(() async {
       try {
-        final result = await task.execute();
-        onTaskCompleted(SuccessTaskOutput(task.identifier, result), this);
+        final intermediary = task.execute();
+
+        onTaskCompleted(
+          SuccessTaskOutput(
+            task.identifier,
+            intermediary is Future ? await intermediary : intermediary,
+          ),
+          this,
+        );
       } on Object catch (error) {
         final taskError = TaskFailedException(
           error.runtimeType,
