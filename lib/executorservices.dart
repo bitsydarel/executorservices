@@ -329,5 +329,5 @@ abstract class Task<R> {
   final Object identifier;
 
   /// Run the task.
-  Future<R> execute();
+  FutureOr<R> execute();
 }

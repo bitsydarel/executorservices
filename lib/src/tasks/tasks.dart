@@ -108,7 +108,7 @@ class ActionTask<R> extends Task<R> {
   final FutureOr<R> Function() _function;
 
   @override
-  Future<R> execute() => _function();
+  FutureOr<R> execute() => _function();
 }
 
 /// A [Task] that require one parameter.
@@ -121,7 +121,7 @@ class CallableTask<P, R> extends Task<R> {
   final FutureOr<R> Function(P parameter) _function;
 
   @override
-  Future<R> execute() => _function(_argument);
+  FutureOr<R> execute() => _function(_argument);
 }
 
 /// A [Task] that require two parameters.
@@ -137,7 +137,7 @@ class Function2Task<P1, P2, R> extends Task<R> {
   final FutureOr<R> Function(P1 p1, P2 p2) _function;
 
   @override
-  Future<R> execute() => _function(_argument1, _argument2);
+  FutureOr<R> execute() => _function(_argument1, _argument2);
 }
 
 /// A [Task] that require three parameters.
@@ -160,7 +160,7 @@ class Function3Task<P1, P2, P3, R> extends Task<R> {
   final FutureOr<R> Function(P1 p1, P2 p2, P3 p3) _function;
 
   @override
-  Future<R> execute() => _function(_argument1, _argument2, _argument3);
+  FutureOr<R> execute() => _function(_argument1, _argument2, _argument3);
 }
 
 /// A [Task] that require four parameters.
@@ -186,7 +186,7 @@ class Function4Task<P1, P2, P3, P4, R> extends Task<R> {
   final FutureOr<R> Function(P1 p1, P2 p2, P3 p3, P4 p4) _function;
 
   @override
-  Future<R> execute() {
+  FutureOr<R> execute() {
     return _function(_argument1, _argument2, _argument3, _argument4);
   }
 }

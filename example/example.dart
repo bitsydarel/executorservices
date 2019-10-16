@@ -25,6 +25,12 @@ void main() {
         ),
       );
 
+  executorService.submitCallable(getRandomNumberSync, 100).then(
+        (number) => printRunningIsolate(
+      "getRandomNumberSync:result:$number",
+    ),
+  );
+
   executorService
       .submitFunction2(getFullName, "Darel", "Bitsy")
       .then((result) => printRunningIsolate("getFullName:result:$result"));
@@ -42,6 +48,12 @@ void onShotFunction() {
 Future<int> getRandomNumber(final int max) async {
   printRunningIsolate("getRandomNumber:enter");
   await Future.delayed(Duration(seconds: 2));
+  return Random.secure().nextInt(max);
+}
+
+int getRandomNumberSync(final int max) {
+  printRunningIsolate("getRandomNumber:enter");
+  sleep(Duration(seconds: 2));
   return Random.secure().nextInt(max);
 }
 

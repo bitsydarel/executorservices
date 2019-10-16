@@ -13,3 +13,7 @@
 ## 1.0.3
 
 - Added support for functions that does not return a future on WEB also.
+
+## 1.0.4
+
+- Updated the readme to demonstrate the new feature, updated the task classes to support  to return FutoreOr.

@@ -35,7 +35,7 @@ int randomInt() {
 
 class SomeIntensiveTask extends Task<String> {
   @override
-  Future<String> execute() async {
+  FutureOr<String> execute() async {
     await Future.delayed(Duration(minutes: 5));
     return "Done executing intensive task";
   }
