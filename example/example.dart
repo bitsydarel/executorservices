@@ -1,3 +1,4 @@
+import "dart:async";
 import "dart:io";
 import "dart:math";
 
@@ -79,7 +80,7 @@ class GetJsonFromUrlTask extends Task<String> {
   final String url;
 
   @override
-  Future<String> execute() {
+  FutureOr<String> execute() {
     return http.get(url).then((response) {
       printRunningIsolate(url);
       return response.body;

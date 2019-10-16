@@ -17,3 +17,7 @@
 ## 1.0.4
 
 - Updated the readme to demonstrate the new feature, updated the task classes to support  to return FutoreOr.
+
+## 1.0.5
+
+- Added shutdown for last oldest unused isolate to free memory gradually.

@@ -50,7 +50,7 @@ class IsolateExecutor extends Executor {
 
   @override
   FutureOr<void> kill() {
-    // ignore since no resources are helded.
+    // ignore since there's no releasable resources.
   }
 
   @override

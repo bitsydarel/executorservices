@@ -310,7 +310,9 @@ abstract class ExecutorService {
     );
 
     if (releaseUnusedExecutors && available.length > maxNonBusyExecutors) {
-      _executors.remove(available.last);
+      final releasableExecutor = available.last;
+      _executors.remove(releasableExecutor);
+      await releasableExecutor.kill();
     }
 
     return SubmittedTaskEvent(
