@@ -99,8 +99,14 @@ class IsolateExecutor extends Executor {
     /// Iterate through all the event received in the isolate command port.
     await for (final Task task in isolateCommandPort) {
       try {
-        final result = await task.execute();
-        executorOutputPort.send(SuccessTaskOutput(task.identifier, result));
+        final intermediary = task.execute();
+
+        executorOutputPort.send(
+          SuccessTaskOutput(
+            task.identifier,
+            intermediary is Future ? await intermediary : intermediary,
+          ),
+        );
       } on Object catch (error) {
         final taskError = TaskFailedException(
           error.runtimeType,
