@@ -22,7 +22,7 @@ import "package:executorservices/executorservices.dart";
 import "dart:math";
 
 main() {
-  final cachedExecutorService = ExecutorService.newCachedExecutor();
+  final cachedExecutorService = ExecutorService.newUnboundExecutor();
 
   cachedExecutorService.submitAction(randomInt);
 
