@@ -1,6 +1,6 @@
 name: executorservices
 description: A Dart package providing services that allow you to execute dart code in different executors, ex - isolates.
-version: 1.0.5
+version: 1.0.6
 homepage: https://github.com/bitsydarel/executorservices
 author: darelbitsy <bitsydarel@gmail.com>
 
@@ -12,5 +12,5 @@ dependencies:
 
 dev_dependencies:
   flutter_code_style: ^1.6.5
-  test: ^1.9.1
+  test: ^1.9.2
   mockito: ^4.1.1

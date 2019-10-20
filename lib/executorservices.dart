@@ -10,7 +10,7 @@ import "dart:collection";
 import "package:executorservices/src/exceptions.dart";
 import "package:executorservices/src/services/isolate_executor_service.dart";
 import "package:executorservices/src/tasks/tasks.dart";
-import "package:meta/meta.dart" show visibleForTesting, protected;
+import "package:meta/meta.dart" show visibleForTesting, protected, factory;
 
 import "src/utils/utils_stub.dart"
     if (dart.library.html) "src/utils/utils_web.dart"
@@ -208,11 +208,23 @@ abstract class ExecutorService {
   /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
   /// Throws [TaskFailedException] if for some reason the [task] failed
   /// with a exception.
-  Future<R> submit<R>(final Task<R> task) {
+  Future<R> submit<R>(Task<R> task) {
     if (_shuttingDown) {
       return Future.error(TaskRejectedException(this));
     } else {
       final taskResult = Completer<R>();
+
+      if (_inProgressTasks.containsKey(task.identifier)) {
+        task = task.clone();
+
+        if (task == null) {
+          throw UnsupportedError(
+            "There's already a submitted task with the same instance,"
+            " override the clone method of your task's class if you want"
+            " to submit the same instance of your task multiple times",
+          );
+        }
+      }
 
       _inProgressTasks[task.identifier] = taskResult;
 
@@ -324,12 +336,27 @@ abstract class ExecutorService {
 
 /// A class representing a unit of execution.
 abstract class Task<R> {
-  /// Create a new task.
-  Task() : identifier = createTaskIdentifier();
-
-  /// [Task] identifier that can allow us to identify a task through isolates.
-  final Object identifier;
+  /// [Task] identifier that allow us to identify a task through isolates.
+  final Object identifier = createTaskIdentifier();
 
   /// Run the task.
   FutureOr<R> execute();
+
+  /// Clone the [Task].
+  ///
+  /// This allow you to submit the same instance of your task multiple times.
+  ///
+  /// Note: You should always return a new instance of your task class.
+  @factory
+  Task<R> clone() => null;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Task &&
+          runtimeType == other.runtimeType &&
+          identifier == other.identifier;
+
+  @override
+  int get hashCode => identifier.hashCode;
 }

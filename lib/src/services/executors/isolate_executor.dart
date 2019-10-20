@@ -32,7 +32,7 @@ class IsolateExecutor extends Executor {
   DateTime _lastUsage;
 
   @override
-  void execute<R>(Task task) async {
+  void execute<R>(Task<R> task) async {
     _processingTask = true;
 
     if (_isolate == null) {

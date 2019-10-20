@@ -1,4 +1,5 @@
 import "dart:async";
+import "dart:io";
 
 import "package:executorservices/executorservices.dart";
 import "package:executorservices/src/tasks/tasks.dart";
@@ -238,6 +239,29 @@ void main() {
       );
     },
   );
+
+  test(
+    "should return result even if there's a task with the same unique id",
+    () {
+      final executors = ExecutorService.newUnboundExecutor();
+
+      final task = FakeTask();
+
+      final results = <Future<void>>[];
+
+      for (var index = 0; index < 10; index++) {
+        results.add(executors.submit(task));
+      }
+
+      final greetingTask = GreetingTask("Darel Bitsy");
+
+      for (var index = 0; index < 10; index++) {
+        results.add(executors.submit(greetingTask));
+      }
+
+      expect(Future.wait(results), completes);
+    },
+  );
 }
 
 class _FakeExecutorService extends ExecutorService {
@@ -276,6 +300,24 @@ class MockExecutor extends Mock implements Executor {
 class FakeTask extends Task<void> {
   @override
   Future<void> execute() async {
+    sleep(Duration(seconds: 1));
     print("Fake task executed");
   }
+
+  @override
+  FakeTask clone() => FakeTask();
+}
+
+class GreetingTask extends Task<void> {
+  GreetingTask(this.name);
+
+  final String name;
+
+  @override
+  FutureOr<void> execute() {
+    print("Hello $name");
+  }
+
+  @override
+  Task<void> clone() => GreetingTask(name);
 }

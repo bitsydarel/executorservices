@@ -21,3 +21,7 @@
 ## 1.0.5
 
 - Added shutdown for last oldest unused isolate to free memory gradually.
+
+## 1.0.6
+
+- Added possibility to re-submit the same instance of a task to an ExecutorService.
