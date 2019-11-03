@@ -27,7 +27,9 @@ main() {
 
   executorService.submitAction(randomInt);
 
-  executorService.submitCallable(expensiveHelloWorld, "Darel Bitsy");
+  final result = executorService.submitCallable(expensiveHelloWorld, "Darel Bitsy");
+  
+  result.then((message) => print(message));
 
   executorService.subscribeToAction(getPosts).listen(
    (number) => print("event received: $number"),
