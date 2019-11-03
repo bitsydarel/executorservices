@@ -25,3 +25,11 @@
 ## 1.0.6
 
 - Added possibility to re-submit the same instance of a task to an ExecutorService.
+
+## 2.0.0
+
+- Added subscribable task feature.
+
+- Subscribable tasks can emit many values before completing.
+
+- Subscribable task's result is a stream, which mean that you can pause, resume and cancel it.
