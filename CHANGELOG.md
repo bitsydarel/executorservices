@@ -33,3 +33,7 @@
 - Subscribable tasks can emit many values before completing.
 
 - Subscribable task's result is a stream, which mean that you can pause, resume and cancel it.
+
+## 2.0.0+1
+
+- Added example for subscribable tasks.

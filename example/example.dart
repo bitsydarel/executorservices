@@ -38,6 +38,22 @@ void main() {
   executorService
       .submitFunction3(greet, "Darel", "Bitsy", "bdeg")
       .then((result) => printRunningIsolate("greet:result:$result"));
+
+  executorService.subscribeToAction(getPosts).listen(
+        (number) => print("event received: $number"),
+        onError: (error) => print("error received $error"),
+        onDone: () => print("task is done"),
+      );
+}
+
+Stream<String> getPosts() async* {
+  for (var index = 0; index < 10; index++) {
+    final post = await http.get(
+      "https://jsonplaceholder.typicode.com/posts/$index",
+    );
+
+    yield post.body;
+  }
 }
 
 void onShotFunction() async {
