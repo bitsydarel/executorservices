@@ -1,5 +1,4 @@
 import "dart:async";
-import "dart:io";
 import "dart:math";
 
 import "package:executorservices/executorservices.dart";
@@ -26,11 +25,11 @@ void main() {
         ),
       );
 
-  executorService.submitCallable(getRandomNumberSync, 100).then(
+  executorService.submitCallable(getRandomNumberSync, 1000000).then(
         (number) => printRunningIsolate(
-      "getRandomNumberSync:result:$number",
-    ),
-  );
+          "getRandomNumberSync:result:$number",
+        ),
+      );
 
   executorService
       .submitFunction2(getFullName, "Darel", "Bitsy")
@@ -41,9 +40,9 @@ void main() {
       .then((result) => printRunningIsolate("greet:result:$result"));
 }
 
-void onShotFunction() {
+void onShotFunction() async {
   printRunningIsolate("onShotFunction:enter");
-  sleep(Duration(seconds: 3));
+  await Future.delayed(Duration(seconds: 3));
 }
 
 Future<int> getRandomNumber(final int max) async {
@@ -54,7 +53,6 @@ Future<int> getRandomNumber(final int max) async {
 
 int getRandomNumberSync(final int max) {
   printRunningIsolate("getRandomNumber:enter");
-  sleep(Duration(seconds: 2));
   return Random.secure().nextInt(max);
 }
 

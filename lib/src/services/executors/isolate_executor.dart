@@ -2,7 +2,9 @@ import "dart:async";
 import "dart:isolate";
 
 import "package:executorservices/executorservices.dart";
-import "package:executorservices/src/tasks/tasks.dart";
+import "package:executorservices/src/tasks/task_event.dart";
+import "package:executorservices/src/tasks/task_output.dart";
+import "package:executorservices/src/utils/utils.dart";
 
 /// [Executor] that execute [Task] into a isolate.
 class IsolateExecutor extends Executor {
@@ -10,7 +12,8 @@ class IsolateExecutor extends Executor {
   IsolateExecutor(
     this.identifier,
     OnTaskCompleted taskCompletion,
-  ) : super(taskCompletion);
+  )   : assert(taskCompletion != null, "taskCompletion can't be null"),
+        super(taskCompletion);
 
   /// The identifier of the [IsolateExecutor].
   final String identifier;
@@ -32,7 +35,7 @@ class IsolateExecutor extends Executor {
   DateTime _lastUsage;
 
   @override
-  void execute<R>(Task<R> task) async {
+  void execute<R>(BaseTask<R> task) async {
     _processingTask = true;
 
     if (_isolate == null) {
@@ -45,7 +48,24 @@ class IsolateExecutor extends Executor {
   }
 
   @override
-  FutureOr<bool> isBusy() => _processingTask;
+  void cancelSubscribableTask(CancelledSubscribableTaskEvent event) {
+    _sendEventToIsolate(event);
+  }
+
+  @override
+  void pauseSubscribableTask(PauseSubscribableTaskEvent event) {
+    _sendEventToIsolate(event);
+  }
+
+  @override
+  void resumeSubscribableTask(ResumeSubscribableTaskEvent event) {
+    _sendEventToIsolate(event);
+    // if a task have been resumed then we update the executor state.
+    _processingTask = true;
+  }
+
+  @override
+  bool isBusy() => _processingTask;
 
   @override
   Future<void> kill() async {
@@ -81,12 +101,32 @@ class IsolateExecutor extends Executor {
     _outputSubscription = outputEvent.listen(
       (event) {
         if (event is TaskOutput) {
-          _processingTask = false;
+          // if the output is final or
+          if (event is SuccessTaskOutput ||
+              event is FailedTaskOutput ||
+              event is SubscribableTaskCancelled ||
+              event is SubscribableTaskDone) {
+            _processingTask = false;
+          } else {
+            _processingTask = true;
+          }
           onTaskCompleted(event, this);
           _lastUsage = DateTime.now();
         }
       },
     );
+  }
+
+  void _sendEventToIsolate(dynamic event) {
+    assert(
+      _isolate != null,
+      "subscribable task pause requested but isolate is null. "
+      "This is a bug please report",
+    );
+
+    _isolateCommandPort.send(event);
+
+    _lastUsage = DateTime.now();
   }
 
   static void _isolateSetup(final SendPort executorOutputPort) async {
@@ -96,25 +136,99 @@ class IsolateExecutor extends Executor {
     // Send the isolate command port as first event.
     executorOutputPort.send(isolateCommandPort.sendPort);
 
-    /// Iterate through all the event received in the isolate command port.
-    await for (final Task task in isolateCommandPort) {
-      try {
-        final intermediary = task.execute();
+    // the in progress subscribable tasks.
+    // allow us to keep track of the subscription to every subscribe task
+    // so we can cancel them.
+    final inProgressSubscriptions = <Object, StreamSubscription>{};
 
-        executorOutputPort.send(
-          SuccessTaskOutput(
-            task.identifier,
-            intermediary is Future ? await intermediary : intermediary,
-          ),
-        );
+    // Iterate through all the event received in the isolate command port.
+    await for (final message in isolateCommandPort) {
+      try {
+        if (message is Task) {
+          final intermediary = message.execute();
+          // Notify that the task has succeeded.
+          executorOutputPort.send(
+            SuccessTaskOutput(
+              message.identifier,
+              intermediary is Future ? await intermediary : intermediary,
+            ),
+          );
+        } else if (message is SubscribableTask) {
+          _handleSubscribableTask(
+            message,
+            executorOutputPort,
+            inProgressSubscriptions,
+          );
+        } else if (message is CancelledSubscribableTaskEvent) {
+          await cleanupSubscription(
+            message.taskIdentifier,
+            inProgressSubscriptions,
+          );
+          // Notify that the task has been successfully cancelled.
+          executorOutputPort.send(
+            SubscribableTaskCancelled(message.taskIdentifier),
+          );
+        } else if (message is PauseSubscribableTaskEvent) {
+          pauseSubscription(
+            message.taskIdentifier,
+            inProgressSubscriptions,
+          );
+        } else if (message is ResumeSubscribableTaskEvent) {
+          resumeSubscription(
+            message.taskIdentifier,
+            inProgressSubscriptions,
+          );
+        } else {
+          throw ArgumentError(
+            "${message.runtimeType} messages are not supported,"
+            " your message should extends $Task or $SubscribableTask",
+          );
+        }
       } on Object catch (error) {
         final taskError = TaskFailedException(
           error.runtimeType,
           error.toString(),
         );
-
-        executorOutputPort.send(FailedTaskOutput(task.identifier, taskError));
+        // Notify that the task has failed paused.
+        executorOutputPort.send(
+          FailedTaskOutput(message.identifier, taskError),
+        );
       }
     }
+  }
+
+  static void _handleSubscribableTask(
+    SubscribableTask message,
+    SendPort executorOutputPort,
+    Map<Object, StreamSubscription> inProgressSubscriptions,
+  ) {
+    final stream = message.execute();
+
+    // Ignoring the cancellation of the subscription
+    // because it's the user who control when to cancel the stream.
+    // We also cancel stream when it's stream is done.
+    // ignore: cancel_subscriptions
+    final subscription = stream.listen(
+      (event) => executorOutputPort.send(
+        SubscribableTaskEvent(message.identifier, event),
+      ),
+      onError: (error) => executorOutputPort.send(
+        SubscribableTaskError(
+          message.identifier,
+          TaskFailedException(error.runtimeType, error.toString()),
+        ),
+      ),
+      onDone: () async {
+        // cleanup  the subscription.
+        await cleanupSubscription(message.identifier, inProgressSubscriptions);
+        // notify that the subscribable task's done emitting data.
+        executorOutputPort.send(
+          SubscribableTaskDone(message.identifier),
+        );
+      },
+    );
+
+    // keep the subscription so that it's can be cancelled, paused, resumed.
+    inProgressSubscriptions[message.identifier] = subscription;
   }
 }

@@ -5,6 +5,14 @@ import "package:executorservices/executorservices.dart";
 
 import "utils.dart";
 
+/// Create a [ExecutorService] backed by isolates.
+///
+/// Isolates are created as needed to execute incoming task.
+///
+/// If there's free isolates they we will be re-used.
+///
+/// This executor does not release backed isolates and
+/// the max number of isolates is equal to the specified count.
 void main() {
   printRunningIsolate("main");
 

@@ -9,21 +9,23 @@ import "dart:collection";
 
 import "package:executorservices/src/exceptions.dart";
 import "package:executorservices/src/services/isolate_executor_service.dart";
+import "package:executorservices/src/task_manager.dart";
+import "package:executorservices/src/tasks/task_event.dart";
+import "package:executorservices/src/tasks/task_output.dart";
+import "package:executorservices/src/tasks/task_tracker.dart";
 import "package:executorservices/src/tasks/tasks.dart";
 import "package:meta/meta.dart" show visibleForTesting, protected, factory;
 
-import "src/utils/utils_stub.dart"
+import "src/utils/utils.dart"
     if (dart.library.html) "src/utils/utils_web.dart"
-    if (dart.library.io) "src/utils/utils.dart";
+    if (dart.library.io) "src/utils/io_utils.dart";
 
 export "src/exceptions.dart";
 
 /// Maximum allowed executors to be kept.
 const int maxNonBusyExecutors = 5;
 
-typedef OnTaskCompleted = void Function(TaskOutput output, Executor executor);
-
-/// Class that execute [Task].
+/// Class that execute [BaseTask].
 abstract class Executor {
   /// Create a [Executor] with the [onTaskCompleted].
   const Executor(this.onTaskCompleted);
@@ -31,11 +33,20 @@ abstract class Executor {
   /// Callback that's called when a [Task] has completed.
   final OnTaskCompleted onTaskCompleted;
 
-  /// Verify if the [Executor] is currently executing any [Task].
-  FutureOr<bool> isBusy();
+  /// Verify if the [Executor] is currently executing any [BaseTask].
+  bool isBusy();
 
-  /// Execute the [Task] on the [Executor].
-  void execute<R>(final Task<R> task);
+  /// Execute the [BaseTask] on the [Executor].
+  void execute<R>(BaseTask<R> task);
+
+  /// Cancel any on going subscription to a [SubscribableTask].
+  void cancelSubscribableTask(CancelledSubscribableTaskEvent event);
+
+  /// Pause any on going subscription to a [SubscribableTask].
+  void pauseSubscribableTask(PauseSubscribableTaskEvent event);
+
+  /// Resume any on going subscription to a [SubscribableTask].
+  void resumeSubscribableTask(ResumeSubscribableTaskEvent event);
 
   /// Kill the [Executor], this is the best place to free all resources.
   FutureOr<void> kill();
@@ -44,22 +55,8 @@ abstract class Executor {
   DateTime lastUsage();
 }
 
-/// A service that may execute [Task] on many [Executor].
+/// A service that may execute [BaseTask] on many [Executor].
 abstract class ExecutorService {
-  /// Create a new [ExecutorService] instance.
-  ///
-  /// [identifier] of the [ExecutorService].
-  ///
-  /// [maxConcurrency] for how many concurrent task can't be run at a time.
-  ExecutorService(
-    this.identifier,
-    this.maxConcurrency, {
-    this.releaseUnusedExecutors = false,
-    final List<Executor> availableExecutors,
-  })  : assert(identifier != null, "identifier can't be null"),
-        assert(maxConcurrency > 0, "maxConcurrency should be at least 1"),
-        _executors = availableExecutors ?? [];
-
   /// Create a cached [ExecutorService], that's backed by many [Executor].
   ///
   /// Note: It's unbound but restrict to the value of 2 ^ 63 so that you won't
@@ -102,11 +99,39 @@ abstract class ExecutorService {
     return IsolateExecutorService(identifier, executorCount);
   }
 
+  /// Create a new [ExecutorService] instance.
+  ///
+  /// [identifier] of the [ExecutorService].
+  ///
+  /// [maxExecutorCount] for how many executors can be used at time to
+  /// execute a task, some [Executor] can run multiple tasks at a time.
+  ExecutorService(
+    this.identifier,
+    this.maxExecutorCount, {
+    this.releaseUnusedExecutors = false,
+    final List<Executor> availableExecutors,
+  })  : assert(identifier != null, "identifier can't be null"),
+        assert(maxExecutorCount > 0, "maxConcurrency should be at least 1"),
+        assert(
+          releaseUnusedExecutors
+              ? maxExecutorCount > maxNonBusyExecutors
+              : !releaseUnusedExecutors, // value is false, just inverse it.
+          "releaseUnusedExecutors can only be true "
+          "if the maxExecutorCount is greater than $maxNonBusyExecutors",
+        ),
+        assert(
+          (availableExecutors != null &&
+                  availableExecutors.length <= maxExecutorCount) ||
+              availableExecutors == null,
+          "availableExecutors size can be at most equal to $maxExecutorCount",
+        ),
+        _executors = availableExecutors ?? [];
+
   /// The identifier of the [ExecutorService].
   final String identifier;
 
   /// The maximum number of [Task] allowed to be run at a time.
-  final int maxConcurrency;
+  final int maxExecutorCount;
 
   /// Release the unused [Executor].
   final bool releaseUnusedExecutors;
@@ -115,15 +140,7 @@ abstract class ExecutorService {
   @protected
   final List<Executor> _executors;
 
-  /// The pending [Task] that need to be executed.
-  final Queue<Task> _pendingTasks = Queue();
-
-  /// A repertoire of currently running [Task] that are waiting to be completed.
-  final Map<Object, Completer> _inProgressTasks = {};
-
-  /// A [StreamController] that handle all the new task submitted to the
-  /// [ExecutorService].
-  final StreamController<Task> _taskManager = StreamController();
+  TaskManager _taskManager;
 
   bool _shuttingDown = false;
 
@@ -212,40 +229,118 @@ abstract class ExecutorService {
     if (_shuttingDown) {
       return Future.error(TaskRejectedException(this));
     } else {
-      final taskResult = Completer<R>();
+      final taskTracker = TaskTracker<R>();
 
-      if (_inProgressTasks.containsKey(task.identifier)) {
-        task = task.clone();
+      getTaskManager().handle(TaskRequest(task, taskTracker));
 
-        if (task == null) {
-          throw UnsupportedError(
-            "There's already a submitted task with the same instance,"
-            " override the clone method of your task's class if you want"
-            " to submit the same instance of your task multiple times",
-          );
-        }
-      }
+      return taskTracker.progress();
+    }
+  }
 
-      _inProgressTasks[task.identifier] = taskResult;
+  /// Subscribe to the events emitted by
+  /// a top level or static [function] without argument.
+  ///
+  /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
+  ///
+  /// Throws a [TaskFailedException] if for some reason the [function] failed
+  /// with a exception.
+  ///
+  /// if the [function] is can't be a top level or static,
+  /// you should Implement [SubscribableTask].
+  Stream<R> subscribeToAction<R>(final Stream<R> Function() function) {
+    return subscribe(SubscribableActionTask(function));
+  }
 
-      if (!_taskManager.hasListener) {
-        _taskManager.stream.asyncMap(createNewTaskEvent).map(
-          (event) {
-            if (event.executor == null && _executors.length < maxConcurrency) {
-              final newExecutor = createExecutor(onTaskCompleted);
-              _executors.add(newExecutor);
-              event.executor = newExecutor;
-              return event;
-            } else {
-              return event;
-            }
-          },
-        ).listen(_handleTask);
-      }
+  /// Subscribe to the events emitted by
+  /// a top level or static [function] with one argument.
+  ///
+  /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
+  /// Throws a [TaskFailedException] if for some reason the [function] failed
+  /// with a exception.
+  ///
+  /// if the [function] is can't be a top level or static,
+  /// you should Implement [SubscribableTask].
+  Stream<R> subscribeToCallable<P, R>(
+    final Stream<R> Function(P parameter) function,
+    final P argument,
+  ) {
+    return subscribe(SubscribableCallableTask(argument, function));
+  }
 
-      _taskManager.add(task);
+  /// Subscribe to the events emitted by
+  /// a top level or static [function] with his two arguments.
+  ///
+  /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
+  /// Throws a [TaskFailedException] if for some reason the [function] failed
+  /// with a exception.
+  ///
+  /// if the [function] is can't be a top level or static,
+  /// you should Implement [SubscribableTask].
+  Stream<R> subscribeToFunction2<P1, P2, R>(
+    final Stream<R> Function(P1 p1, P2 p2) function,
+    final P1 argument1,
+    final P2 argument2,
+  ) {
+    return subscribe(SubscribableFunction2Task(argument1, argument2, function));
+  }
 
-      return taskResult.future;
+  /// Subscribe to the events emitted by
+  /// a top level or static [function] with 3 arguments.
+  ///
+  /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
+  /// Throws a [TaskFailedException] if for some reason the [function] failed
+  /// with a exception.
+  ///
+  /// if the [function] is can't be a top level or static,
+  /// you should Implement [SubscribableTask].
+  Stream<R> subscribeToFunction3<P1, P2, P3, R>(
+    final Stream<R> Function(P1 p1, P2 p2, P3 p3) function,
+    final P1 argument1,
+    final P2 argument2,
+    final P3 argument3,
+  ) {
+    return subscribe(
+      SubscribableFunction3Task(argument1, argument2, argument3, function),
+    );
+  }
+
+  /// Subscribe to the events emitted by
+  /// a top level or static [function] with 4 arguments.
+  ///
+  /// Throws [TaskRejectedException] if the [ExecutorService] is shutting down.
+  /// Throws a [TaskFailedException] if for some reason the [function] failed
+  /// with a exception.
+  ///
+  /// if the [function] is can't be a top level or static.
+  /// Subscribe to the events emitted by
+  Stream<R> subscribeToFunction4<P1, P2, P3, P4, R>(
+    final Stream<R> Function(P1 p1, P2 p2, P3 p3, P4 p4) function,
+    final P1 argument1,
+    final P2 argument2,
+    final P3 argument3,
+    final P4 argument4,
+  ) {
+    return subscribe(
+      SubscribableFunction4Task(
+        argument1,
+        argument2,
+        argument3,
+        argument4,
+        function,
+      ),
+    );
+  }
+
+  /// Subscribe to the stream of events produced by [task].
+  Stream<R> subscribe<R>(SubscribableTask<R> task) {
+    if (_shuttingDown) {
+      return Stream.error(TaskRejectedException(this));
+    } else {
+      final taskTracker = SubscribableTaskTracker<R>();
+
+      getTaskManager().handle(TaskRequest(task, taskTracker));
+
+      return taskTracker.progress();
     }
   }
 
@@ -257,14 +352,11 @@ abstract class ExecutorService {
       await executor.kill();
     }
 
-    await _taskManager.close();
+    await _taskManager.dispose();
   }
 
   /// Create a new [Executor] to execute [Task].
   Executor createExecutor(final OnTaskCompleted onTaskCompleted);
-
-  /// Get the current pending [Task].
-  List<Task> getPendingTasks() => UnmodifiableListView(_pendingTasks);
 
   /// Get the current list of [Executor].
   List<Executor> getExecutors() => UnmodifiableListView(_executors);
@@ -273,51 +365,22 @@ abstract class ExecutorService {
   /// can accept any [Task] or [Function].
   FutureOr<bool> canSubmitTask() => !_shuttingDown;
 
-  /// Callback that's called when a [Executor]'s done processing a [Task].
+  /// Create a [SubmittedTaskEvent] for [request] with
+  /// the next available [Executor] to execute the [request]'s task.
   @visibleForTesting
-  void onTaskCompleted(
-    final TaskOutput taskOutput,
-    final Executor executor,
-  ) {
-    final completer = _inProgressTasks.remove(taskOutput.taskIdentifier);
-
-    // Here if dart supported sealed class it's would be great.
-    // todo: check for sealed class support for dart.
-    if (taskOutput is SuccessTaskOutput) {
-      completer.complete(taskOutput.result);
-    } else if (taskOutput is FailedTaskOutput) {
-      completer.completeError(taskOutput.error);
-    }
-
-    if (_pendingTasks.isNotEmpty) {
-      /// We give this task to the passed executor.
-      executor.execute(_pendingTasks.removeFirst());
-    }
-  }
-
-  void _handleTask(final SubmittedTaskEvent event) {
-    if (event.executor == null) {
-      _pendingTasks.addLast(event.task);
-    } else {
-      event.executor.execute(event.task);
-    }
-  }
-
-  /// Create a [SubmittedTaskEvent] for [task] with
-  /// the next available [Executor] to execute the [task].
-  @visibleForTesting
-  Future<SubmittedTaskEvent> createNewTaskEvent(final Task task) async {
+  Future<SubmittedTaskEvent> createNewTaskEvent(
+    final TaskRequest request,
+  ) async {
     final available = <Executor>[];
 
     for (final executor in _executors) {
-      final isBusy = await executor.isBusy();
-
-      if (!isBusy) {
+      if (!executor.isBusy()) {
         available.add(executor);
       }
     }
 
     available.sort(
+      // sort the list in the way that the older is at the bottom
       (left, right) => right.lastUsage().compareTo(left.lastUsage()),
     );
 
@@ -327,36 +390,90 @@ abstract class ExecutorService {
       await releasableExecutor.kill();
     }
 
-    return SubmittedTaskEvent(
-      task,
-      available.isNotEmpty ? available.first : null,
-    );
+    var executor = available.isNotEmpty ? available.first : null;
+
+    // We create a new executor if we don't have any available executor
+    // And if the provided maxConcurrency allows us.
+    if (executor == null && _executors.length < maxExecutorCount) {
+      executor = createExecutor(getTaskManager().onTaskOutput);
+      _executors.add(executor);
+    }
+
+    if (executor != null && request.taskCompleter is SubscribableTaskTracker) {
+      (request.taskCompleter as SubscribableTaskTracker)
+        ..setCancellationCallback(
+          () => executor.cancelSubscribableTask(
+            CancelledSubscribableTaskEvent(request.task.identifier),
+          ),
+        )
+        ..setPauseCallback(
+          () => executor.pauseSubscribableTask(
+            PauseSubscribableTaskEvent(request.task.identifier),
+          ),
+        )
+        ..setResumeCallback(
+          () => executor.resumeSubscribableTask(
+            ResumeSubscribableTaskEvent(request.task.identifier),
+          ),
+        );
+    }
+
+    return SubmittedTaskEvent(request.task, executor);
   }
+
+  /// Get the current [ExecutorService]'s [TaskManager].
+  @visibleForTesting
+  TaskManager getTaskManager() =>
+      _taskManager ??= TaskManager(createNewTaskEvent);
 }
 
 /// A class representing a unit of execution.
-abstract class Task<R> {
-  /// [Task] identifier that allow us to identify a task through isolates.
+abstract class BaseTask<R> {
+  /// Task identifier that allow us to identify a task through isolates.
   final Object identifier = createTaskIdentifier();
 
-  /// Run the task.
-  FutureOr<R> execute();
+  /// Execute the task.
+  R execute();
 
-  /// Clone the [Task].
+  /// Clone the task.
   ///
   /// This allow you to submit the same instance of your task multiple times.
   ///
   /// Note: You should always return a new instance of your task class.
   @factory
-  Task<R> clone() => null;
+  BaseTask<R> clone() => null;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is Task &&
+      other is BaseTask &&
           runtimeType == other.runtimeType &&
           identifier == other.identifier;
 
   @override
   int get hashCode => identifier.hashCode;
+}
+
+/// A class representing a unit of execution that return a [Future] or [R]
+abstract class Task<R> extends BaseTask<FutureOr<R>> {
+  /// Clone the [Task].
+  ///
+  /// This allow you to submit the same instance of your task multiple times.
+  ///
+  /// Note: You should always return a new instance of your task class.
+  @override
+  @factory
+  Task<R> clone() => null;
+}
+
+/// A class representing a stream of unit of execution.
+abstract class SubscribableTask<R> extends BaseTask<Stream<R>> {
+  /// Clone the [SubscribableTask].
+  ///
+  /// This allow you to submit the same instance of your task multiple times.
+  ///
+  /// Note: You should always return a new instance of your task class.
+  @override
+  @factory
+  SubscribableTask<R> clone() => null;
 }

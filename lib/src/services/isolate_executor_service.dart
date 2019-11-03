@@ -1,9 +1,10 @@
 import "package:executorservices/executorservices.dart";
+import "package:executorservices/src/tasks/task_output.dart";
 import "executors/isolate_executor_web.dart"
     if (dart.library.io) "executors/isolate_executor.dart";
 
 /// A [IsolateExecutorService] that run [Task]
-/// into a [executors.IsolateExecutor].
+/// into a [IsolateExecutor].
 class IsolateExecutorService extends ExecutorService {
   /// Create a [IsolateExecutorService] with the following [identifier].
   ///

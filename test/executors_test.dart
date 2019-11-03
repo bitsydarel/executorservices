@@ -1,10 +1,15 @@
 import "dart:async";
-import "dart:io";
 
 import "package:executorservices/executorservices.dart";
+import "package:executorservices/src/task_manager.dart";
+import "package:executorservices/src/tasks/task_event.dart";
+import "package:executorservices/src/tasks/task_output.dart";
+import "package:executorservices/src/tasks/task_tracker.dart";
 import "package:executorservices/src/tasks/tasks.dart";
 import "package:mockito/mockito.dart";
 import "package:test/test.dart";
+
+import "test_utils.dart";
 
 void main() {
   test(
@@ -14,19 +19,20 @@ void main() {
       final mockExecutor2 = MockExecutor(2);
 
       when(mockExecutor1.isBusy()).thenAnswer((_) => false);
-      when(mockExecutor2.isBusy()).thenAnswer((_) => Future.value(true));
+      when(mockExecutor2.isBusy()).thenAnswer((_) => true);
 
       final executorService = _FakeExecutorService(
         "fakeexecutor",
-        1,
+        2,
         false,
         [mockExecutor1, mockExecutor2],
       );
 
-      final task = FakeTask();
+      final task = CleanableFakeDelayingTask();
+      final taskTracker = TaskTracker();
 
       expect(
-        executorService.createNewTaskEvent(task),
+        executorService.createNewTaskEvent(TaskRequest(task, taskTracker)),
         completion(equals(SubmittedTaskEvent(task, mockExecutor1))),
       );
     },
@@ -39,7 +45,7 @@ void main() {
       final mockExecutor2 = MockExecutor(2);
 
       when(mockExecutor1.isBusy()).thenAnswer((_) => true);
-      when(mockExecutor2.isBusy()).thenAnswer((_) => Future.value(true));
+      when(mockExecutor2.isBusy()).thenAnswer((_) => true);
 
       final executorService = _FakeExecutorService(
         "fakeexecutor",
@@ -48,10 +54,11 @@ void main() {
         [mockExecutor1, mockExecutor2],
       );
 
-      final task = FakeTask();
+      final task = CleanableFakeDelayingTask();
+      final taskTracker = TaskTracker();
 
       expect(
-        executorService.createNewTaskEvent(task),
+        executorService.createNewTaskEvent(TaskRequest(task, taskTracker)),
         completion(equals(SubmittedTaskEvent(task, null))),
       );
     },
@@ -62,7 +69,7 @@ void main() {
     () {
       final mockExecutor1 = MockExecutor(1);
 
-      when(mockExecutor1.isBusy()).thenAnswer((_) => Future.value(true));
+      when(mockExecutor1.isBusy()).thenAnswer((_) => true);
 
       final executorService = _FakeExecutorService(
         "fakeexecutor",
@@ -71,7 +78,7 @@ void main() {
         [mockExecutor1],
       );
 
-      expect(executorService.getPendingTasks(), isEmpty);
+      expect(executorService.getTaskManager().getPendingTasks(), isEmpty);
 
       // we can't await for the result because the executor will never be
       // ready to process this task so we will wait forever.
@@ -83,7 +90,7 @@ void main() {
         // It's might make the test flaky but work as of now.
         Future.delayed(
           Duration(milliseconds: 500),
-          executorService.getPendingTasks,
+          executorService.getTaskManager().getPendingTasks,
         ),
         completion(hasLength(1)),
       );
@@ -95,7 +102,7 @@ void main() {
     () async {
       final mockExecutor1 = MockExecutor(1);
 
-      when(mockExecutor1.isBusy()).thenAnswer((_) => Future.value(false));
+      when(mockExecutor1.isBusy()).thenAnswer((_) => false);
 
       final executorService = _FakeExecutorService(
         "fakeservice",
@@ -134,7 +141,7 @@ void main() {
         (configuration) => mockExecutor2,
       );
 
-      when(mockExecutor1.isBusy()).thenAnswer((_) => Future.value(true));
+      when(mockExecutor1.isBusy()).thenAnswer((_) => true);
 
       final task = ActionTask(() => print(""));
 
@@ -150,7 +157,7 @@ void main() {
   );
 
   test(
-    "should remove unused executors if the executors more $maxNonBusyExecutors",
+    "should remove unused executors if executors are more $maxNonBusyExecutors",
     () async {
       final mockExecutor1 = MockExecutor(1);
       final mockExecutor2 = MockExecutor(2);
@@ -203,7 +210,7 @@ void main() {
 
       final executorService = _FakeExecutorService(
         "fakeexecutor",
-        2,
+        8,
         true /* We are allowing the service to cleanup executors */,
         [
           mockExecutor1,
@@ -219,9 +226,10 @@ void main() {
 
       expect(executorService.getExecutors(), hasLength(8));
 
-      final task = FakeTask();
+      final task = CleanableFakeDelayingTask();
+      final taskTracker = TaskTracker();
 
-      await executorService.createNewTaskEvent(task);
+      await executorService.createNewTaskEvent(TaskRequest(task, taskTracker));
 
       expect(executorService.getExecutors(), hasLength(7));
 
@@ -245,7 +253,7 @@ void main() {
     () {
       final executors = ExecutorService.newUnboundExecutor();
 
-      final task = FakeTask();
+      final task = CleanableFakeDelayingTask();
 
       final results = <Future<void>>[];
 
@@ -253,10 +261,8 @@ void main() {
         results.add(executors.submit(task));
       }
 
-      final greetingTask = GreetingTask("Darel Bitsy");
-
       for (var index = 0; index < 10; index++) {
-        results.add(executors.submit(greetingTask));
+        results.add(executors.submit(FakeDelayingTask()));
       }
 
       expect(Future.wait(results), completes);
@@ -286,38 +292,4 @@ class _FakeExecutorService extends ExecutorService {
       onCreateExecutor != null
           ? onCreateExecutor(onTaskCompleted)
           : MockExecutor(0);
-}
-
-class MockExecutor extends Mock implements Executor {
-  MockExecutor(this.id);
-
-  final int id;
-
-  @override
-  String toString() => "MockExecutor$id";
-}
-
-class FakeTask extends Task<void> {
-  @override
-  Future<void> execute() async {
-    sleep(Duration(seconds: 1));
-    print("Fake task executed");
-  }
-
-  @override
-  FakeTask clone() => FakeTask();
-}
-
-class GreetingTask extends Task<void> {
-  GreetingTask(this.name);
-
-  final String name;
-
-  @override
-  FutureOr<void> execute() {
-    print("Hello $name");
-  }
-
-  @override
-  Task<void> clone() => GreetingTask(name);
 }
