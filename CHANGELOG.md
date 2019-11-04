@@ -37,3 +37,11 @@
 ## 2.0.0+1
 
 - Added example for subscribable tasks.
+
+## 2.0.1
+
+- Changed LICENSE from GPL 3 to BSD-3 to allow more adoption.
+
+## 2.0.2
+
+- Cleaner documentation for each methods provided by the library
