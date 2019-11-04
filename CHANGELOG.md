@@ -45,3 +45,7 @@
 ## 2.0.2
 
 - Cleaner documentation for each methods provided by the library
+
+## 2.0.2+1
+
+- Removed dependency on meta 1.1.8 to allow integration in old flutter projects.
