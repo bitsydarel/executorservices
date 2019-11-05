@@ -399,23 +399,9 @@ abstract class ExecutorService {
       _executors.add(executor);
     }
 
-    if (executor != null && request.taskCompleter is SubscribableTaskTracker) {
+    if (request.taskCompleter is SubscribableTaskTracker) {
       (request.taskCompleter as SubscribableTaskTracker)
-        ..setCancellationCallback(
-          () => executor.cancelSubscribableTask(
-            CancelledSubscribableTaskEvent(request.task.identifier),
-          ),
-        )
-        ..setPauseCallback(
-          () => executor.pauseSubscribableTask(
-            PauseSubscribableTaskEvent(request.task.identifier),
-          ),
-        )
-        ..setResumeCallback(
-          () => executor.resumeSubscribableTask(
-            ResumeSubscribableTaskEvent(request.task.identifier),
-          ),
-        );
+          .setCancellationCallback(() => _taskManager.cancelTask(request.task));
     }
 
     return SubmittedTaskEvent(request.task, executor);

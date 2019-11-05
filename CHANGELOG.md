@@ -49,3 +49,8 @@
 ## 2.0.2+1
 
 - Removed dependency on meta 1.1.8 to allow integration in old flutter projects.
+
+## 2.0.3
+
+- Delegated SubscribableTask pause, resume, cancel hooks to the task manager.
+- Add ability to cancel a SubscribableTask before execution.

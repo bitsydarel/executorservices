@@ -80,6 +80,21 @@ class TaskManager {
     _taskHandler.add(request);
   }
 
+  /// Cancel a pending [SubscribableTask] before it's executed.
+  /// This is useful when a [SubscribableTask] have been submitted but there's
+  /// no available [Executor] to run it and the user cancel it before execution.
+  void cancelTask<R>(final SubscribableTask<R> task) {
+    final tracker = _inProgressTasks.remove(task.identifier);
+
+    if (tracker is SubscribableTaskTracker) {
+      tracker.complete();
+    }
+
+    _pendingTasks.removeWhere(
+      (pendingTask) => pendingTask.identifier == task.identifier,
+    );
+  }
+
   /// Dispose the [TaskManager].
   Future<void> dispose() {
     _inProgressTasks.clear();
@@ -127,7 +142,7 @@ class TaskManager {
 
     if (_pendingTasks.isNotEmpty && !executor.isBusy()) {
       /// We give this task to the passed executor.
-      executor.execute(_pendingTasks.removeFirst());
+      _setupHookAndRunTask(_pendingTasks.removeFirst(), executor);
     }
   }
 
@@ -142,8 +157,36 @@ class TaskManager {
     if (event.executor == null) {
       _pendingTasks.addLast(event.task);
     } else {
-      event.executor.execute(event.task);
+      _setupHookAndRunTask(event.task, event.executor);
     }
+  }
+
+  void _setupHookAndRunTask<R>(
+    final BaseTask<R> task,
+    final Executor executor,
+  ) {
+    final tracker = _inProgressTasks[task.identifier];
+
+    if (tracker is SubscribableTaskTracker) {
+      tracker
+        ..setCancellationCallback(
+          () => executor.cancelSubscribableTask(
+            CancelledSubscribableTaskEvent(task.identifier),
+          ),
+        )
+        ..setPauseCallback(
+          () => executor.pauseSubscribableTask(
+            PauseSubscribableTaskEvent(task.identifier),
+          ),
+        )
+        ..setResumeCallback(
+          () => executor.resumeSubscribableTask(
+            ResumeSubscribableTaskEvent(task.identifier),
+          ),
+        );
+    }
+
+    executor.execute(task);
   }
 }
 

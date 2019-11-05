@@ -7,7 +7,7 @@ import "package:http/http.dart" as http;
 import "utils.dart";
 
 void main() {
-  final executorService = ExecutorService.newSingleExecutor();
+  final executorService = ExecutorService.newUnboundExecutor();
 
   executorService
       .submit(
@@ -39,15 +39,30 @@ void main() {
       .submitFunction3(greet, "Darel", "Bitsy", "bdeg")
       .then((result) => printRunningIsolate("greet:result:$result"));
 
-  executorService.subscribeToAction(getPosts).listen(
+  executorService.subscribeToCallable(getPosts, 10).listen(
+        (number) => print("event received: $number"),
+        onError: (error) => print("error received $error"),
+        onDone: () => print("task is done"),
+      );
+
+  executorService
+      .subscribeToCallable(getPosts, 10)
+      .asyncMap(
+        (post) => executorService.submitCallable(getRandomNumber, post.length),
+      )
+      .asyncMap(
+        (number) =>
+            executorService.submitCallable(getRandomNumberSync, number + 1),
+      )
+      .listen(
         (number) => print("event received: $number"),
         onError: (error) => print("error received $error"),
         onDone: () => print("task is done"),
       );
 }
 
-Stream<String> getPosts() async* {
-  for (var index = 0; index < 10; index++) {
+Stream<String> getPosts(final int max) async* {
+  for (var index = 0; index < max; index++) {
     final post = await http.get(
       "https://jsonplaceholder.typicode.com/posts/$index",
     );
